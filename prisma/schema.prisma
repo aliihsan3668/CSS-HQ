@@ -1,9 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,19 +11,114 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  role         String   @default("STUDENT") // STUDENT | ADMIN
+  phone        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orders     Order[]
+  purchases  Purchase[]
 }
 
-model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model Subject {
+  id             String   @id @default(cuid())
+  slug           String   @unique
+  name           String
+  category       String   // COMPULSORY | OPTIONAL
+  shortDesc      String
+  longDesc       String
+  iconKey        String   @default("book") // lucide icon name
+  accentColor    String   @default("emerald")
+  order          Int      @default(0)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Pricing stored as integer PKR
+  pricePkr       Int      @default(1500)
+
+  // Stats shown on the card/detail page
+  questionsCount Int      @default(0)
+  answersCount   Int      @default(0)
+  mcqsCount      Int      @default(0)
+  pastPapersFrom Int      @default(2016)
+  pastPapersTo   Int      @default(2025)
+
+  // JSON-encoded feature list (array of strings)
+  featuresJson   String   @default("[]")
+  // JSON-encoded sample preview questions (array of {q, likelihood})
+  sampleJson     String   @default("[]")
+
+  pdfs           SubjectPdf[]
+  orderItems     OrderItem[]
+  purchases      Purchase[]
+}
+
+model SubjectPdf {
+  id         String   @id @default(cuid())
+  subjectId  String
+  title      String
+  // Storage key: blob pathname OR local /uploads filename
+  storageKey String
+  // Source: "blob" | "local"
+  source     String   @default("local")
+  fileSize   Int      @default(0)
+  mimeType   String   @default("application/pdf")
+  createdAt  DateTime @default(now())
+
+  subject    Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+}
+
+model Order {
+  id                  String   @id @default(cuid())
+  userId              String
+  totalAmountPkr      Int
+  status              String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  paymentMethod       String   // JAZZCASH | EASYPaisa | NAYAPAY | SADAPAY | PAYONEER
+  paymentScreenshot   String?  // storage key for uploaded receipt
+  paymentNotes        String?  // optional transaction id / notes from student
+  rejectionReason     String?
+  createdAt           DateTime @default(now())
+  approvedAt          DateTime?
+  updatedAt           DateTime @updatedAt
+
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items               OrderItem[]
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  subjectId   String?
+  // For bundle purchases, subjectId is null and bundleType is set
+  bundleType  String?  // COMPULSORY | OPTIONAL | FULL
+  title       String
+  pricePkr    Int
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  subject     Subject? @relation(fields: [subjectId], references: [id])
+}
+
+model Purchase {
+  id         String   @id @default(cuid())
+  userId     String
+  subjectId  String
+  orderId    String
+  // Bundle purchases grant access to multiple subjects — we create one Purchase row per subject granted
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject    Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, subjectId])
+}
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
 }
