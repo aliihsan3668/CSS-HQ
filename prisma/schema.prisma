@@ -62,12 +62,11 @@ model SubjectPdf {
   id         String   @id @default(cuid())
   subjectId  String
   title      String
-  // Storage key: blob pathname OR local /uploads filename
   storageKey String
-  // Source: "blob" | "local"
   source     String   @default("local")
   fileSize   Int      @default(0)
   mimeType   String   @default("application/pdf")
+  dataBytes  Bytes?
   createdAt  DateTime @default(now())
 
   subject    Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)

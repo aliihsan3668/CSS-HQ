@@ -1,29 +1,22 @@
-// Storage abstraction layer.
-// Uses Vercel Blob if BLOB_READ_WRITE_TOKEN is set; otherwise falls back to /tmp (writable on Vercel + local).
-// All persisted "storageKey" values are either:
-//   - "blob:<full-url>" for Vercel Blob
-//   - "local:<filename>" for local files in /tmp/css-hq-uploads
-
 import fs from "node:fs/promises";
 import path from "node:path";
 import { put, del } from "@vercel/blob";
+import { db } from "@/lib/db";
 
 const IS_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN;
 const LOCAL_DIR = path.join("/tmp", "css-hq-uploads");
+const MAX_DB_SIZE = 25 * 1024 * 1024;
 
 function isVercel() {
   return !!process.env.VERCEL || !!process.env.VERCEL_ENV;
 }
 
-async function ensureLocalDir() {
-  await fs.mkdir(LOCAL_DIR, { recursive: true });
-}
-
 export interface UploadedFile {
   storageKey: string;
-  source: "blob" | "local";
+  source: "db" | "blob" | "local";
   size: number;
   mimeType: string;
+  data: Buffer;
 }
 
 export async function uploadFile(
@@ -32,10 +25,11 @@ export async function uploadFile(
   mimeType: string
 ): Promise<UploadedFile> {
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const unique = `${Date.now()}-${safeName}`;
+  const size = data.length;
 
-  if (IS_BLOB) {
+  if (IS_BLOB && size > MAX_DB_SIZE) {
     try {
+      const unique = `${Date.now()}-${safeName}`;
       const blob = await put(`pdfs/${unique}`, data, {
         access: "public",
         contentType: mimeType,
@@ -44,78 +38,74 @@ export async function uploadFile(
       return {
         storageKey: `blob:${blob.url}`,
         source: "blob",
-        size: data.length,
+        size,
         mimeType,
+        data,
       };
     } catch (e: any) {
-      console.error("[storage] Vercel Blob upload failed:", e?.message || e);
-      throw new Error(
-        `File upload failed (Vercel Blob error): ${e?.message || "unknown"}. ` +
-          "Check that BLOB_READ_WRITE_TOKEN is set and the Blob store is connected to your Vercel project."
-      );
+      throw new Error(`Vercel Blob upload failed: ${e?.message}`);
     }
   }
 
-  if (isVercel() && !IS_BLOB) {
+  if (size > MAX_DB_SIZE && isVercel() && !IS_BLOB) {
     throw new Error(
-      "Vercel Blob is not configured. On Vercel, you MUST set up Blob storage:\n" +
-        "1. Go to your Vercel project → Storage tab → Create Blob Store\n" +
-        "2. Connect it to your project (Vercel auto-adds BLOB_READ_WRITE_TOKEN)\n" +
-        "3. Redeploy your project\n" +
-        "See: https://vercel.com/docs/storage/vercel-blob"
+      `File is too large (${(size / 1024 / 1024).toFixed(1)} MB). Max is 25MB without Vercel Blob.`
     );
   }
 
-  try {
-    await ensureLocalDir();
-    const localPath = path.join(LOCAL_DIR, unique);
-    await fs.writeFile(localPath, data);
-    return {
-      storageKey: `local:${unique}`,
-      source: "local",
-      size: data.length,
-      mimeType,
-    };
-  } catch (e: any) {
-    console.error("[storage] Local file write failed:", e?.message || e);
-    throw new Error(`Could not write file locally: ${e?.message || "unknown"}`);
-  }
+  return {
+    storageKey: "db:pending",
+    source: "db",
+    size,
+    mimeType,
+    data,
+  };
 }
 
 export async function readFileBytes(storageKey: string): Promise<{
   data: Buffer;
   mimeType: string;
 } | null> {
+  if (storageKey.startsWith("db:")) {
+    const pdfId = storageKey.slice(3);
+    if (pdfId === "pending") return null;
+    try {
+      const pdf = await db.subjectPdf.findUnique({
+        where: { id: pdfId },
+        select: { dataBytes: true, mimeType: true },
+      });
+      if (!pdf || !pdf.dataBytes) return null;
+      return {
+        data: Buffer.from(pdf.dataBytes),
+        mimeType: pdf.mimeType || "application/pdf",
+      };
+    } catch (e: any) {
+      console.error("[storage] DB read error:", e?.message);
+      return null;
+    }
+  }
+
   if (storageKey.startsWith("blob:http")) {
     const url = storageKey.slice(5);
     try {
       const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) {
-        console.error(`[storage] Blob fetch failed: ${res.status} ${res.statusText}`);
-        return null;
-      }
+      if (!res.ok) return null;
       const buf = Buffer.from(await res.arrayBuffer());
       const mime = url.endsWith(".pdf") ? "application/pdf" : "application/octet-stream";
       return { data: buf, mimeType: mime };
-    } catch (e: any) {
-      console.error("[storage] Blob fetch error:", e?.message || e);
+    } catch {
       return null;
     }
   }
 
   if (storageKey.startsWith("blob:")) {
-    const pathname = storageKey.slice(5);
-    console.error(
-      `[storage] Legacy blob key detected (pathname only): ${pathname}. Please re-upload.`
-    );
     return null;
   }
 
   if (storageKey.startsWith("local:")) {
     const fname = storageKey.slice(6);
-    const localPath = path.join(LOCAL_DIR, fname);
     try {
-      const buf = await fs.readFile(localPath);
+      const buf = await fs.readFile(path.join(LOCAL_DIR, fname));
       const mime = fname.endsWith(".pdf") ? "application/pdf" : "application/octet-stream";
       return { data: buf, mimeType: mime };
     } catch {
@@ -126,16 +116,12 @@ export async function readFileBytes(storageKey: string): Promise<{
 }
 
 export async function deleteFile(storageKey: string): Promise<void> {
+  if (storageKey.startsWith("db:")) return;
   if (storageKey.startsWith("blob:http")) {
     const url = storageKey.slice(5);
     try {
       await del(url);
-    } catch (e) {
-      console.error("[storage] Blob delete failed:", e);
-    }
-    return;
-  }
-  if (storageKey.startsWith("blob:")) {
+    } catch {}
     return;
   }
   if (storageKey.startsWith("local:")) {
@@ -154,7 +140,8 @@ export function getStorageStatus() {
   return {
     blobConfigured: IS_BLOB,
     isVercel: isVercel(),
-    localDir: LOCAL_DIR,
-    canUpload: IS_BLOB || !isVercel(),
+    canUpload: true,
+    storageMode: "database" as const,
+    maxDbSizeMb: 25,
   };
 }

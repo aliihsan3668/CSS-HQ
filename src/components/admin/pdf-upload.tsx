@@ -14,7 +14,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 
 interface PdfItem {
   id: string;
@@ -41,7 +40,6 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -59,18 +57,16 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
     }
     setFile(f);
     if (!title) {
-      // auto-fill title from filename (strip extension)
       setTitle(f.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " "));
     }
   }
 
-   async function upload() {
+  async function upload() {
     if (!file) {
       toast.error("Select a PDF first");
       return;
     }
     setUploading(true);
-    setProgress(0);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -104,13 +100,12 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
       });
       setFile(null);
       setTitle("");
-      setProgress(0);
       if (fileRef.current) fileRef.current.value = "";
       router.refresh();
     } catch (e: any) {
       const msg =
         e?.name === "AbortError"
-          ? "Upload timed out (90s). Vercel Blob might not be configured. Check the setup guide."
+          ? "Upload timed out (90s). Check your connection and try again."
           : e instanceof Error
           ? e.message
           : "Unknown error";
@@ -127,9 +122,7 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
   async function removePdf(pdfId: string, pdfTitle: string) {
     setDeletingId(pdfId);
     try {
-      const url = `/api/admin/subjects/${subjectId}/pdfs?pdfId=${encodeURIComponent(
-        pdfId
-      )}`;
+      const url = `/api/admin/subjects/${subjectId}/pdfs?pdfId=${encodeURIComponent(pdfId)}`;
       const res = await fetch(url, { method: "DELETE" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to delete");
@@ -146,7 +139,6 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
 
   return (
     <div className="space-y-5">
-      {/* Upload form */}
       <div className="rounded-lg border border-dashed p-4 space-y-3">
         <div className="space-y-1.5">
           <Label htmlFor="pdf-file">PDF file</Label>
@@ -169,11 +161,11 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
             disabled={uploading}
           />
         </div>
-        {uploading && progress > 0 && (
-          <div className="space-y-1">
-            <Progress value={progress} className="h-1.5" />
-            <p className="text-xs text-muted-foreground">Uploading… {progress}%</p>
-          </div>
+        {uploading && (
+          <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+            <Loader2 className="size-3 animate-spin" />
+            Uploading… please wait
+          </p>
         )}
         <Button
           onClick={upload}
@@ -189,16 +181,11 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
         </Button>
       </div>
 
-      {/* Existing PDFs list */}
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-semibold">
-            Uploaded PDFs{" "}
-            <span className="text-muted-foreground font-normal">
-              ({pdfs.length})
-            </span>
-          </h4>
-        </div>
+        <h4 className="text-sm font-semibold">
+          Uploaded PDFs{" "}
+          <span className="text-muted-foreground font-normal">({pdfs.length})</span>
+        </h4>
         {pdfs.length === 0 ? (
           <div className="rounded-lg border bg-muted/30 p-6 text-center">
             <FileText className="size-8 text-muted-foreground/60 mx-auto mb-2" />
@@ -219,19 +206,11 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground font-mono">
-                      #{idx + 1}
-                    </span>
+                    <span className="text-xs text-muted-foreground font-mono">#{idx + 1}</span>
                     <p className="text-sm font-medium truncate">{pdf.title}</p>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {formatSize(pdf.fileSize)}
-                    {" · "}
-                    {new Date(pdf.createdAt).toLocaleDateString("en-PK", {
-                      year: "numeric",
-                      month: "short",
-                      day: "numeric",
-                    })}
+                    {formatSize(pdf.fileSize)} · {new Date(pdf.createdAt).toLocaleDateString("en-PK", { year: "numeric", month: "short", day: "numeric" })}
                   </p>
                 </div>
                 <Button
@@ -240,7 +219,6 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
                   onClick={() => removePdf(pdf.id, pdf.title)}
                   disabled={deletingId === pdf.id}
                   className="text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0"
-                  aria-label={`Delete ${pdf.title}`}
                 >
                   {deletingId === pdf.id ? (
                     <Loader2 className="size-4 animate-spin" />
@@ -258,8 +236,7 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
         <div className="flex items-start gap-2 rounded-md bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 p-3">
           <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
           <p className="text-xs text-emerald-800 dark:text-emerald-300">
-            These PDFs are served through the protected download route — only
-            buyers (or admins) can access them.
+            These PDFs are served through the protected download route — only buyers (or admins) can access them.
           </p>
         </div>
       )}
@@ -267,8 +244,7 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
         <div className="flex items-start gap-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 p-3">
           <AlertTriangle className="size-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <p className="text-xs text-amber-800 dark:text-amber-300">
-            Students who buy this subject will see an empty notes viewer until
-            at least one PDF is uploaded.
+            Students who buy this subject will see an empty notes viewer until at least one PDF is uploaded.
           </p>
         </div>
       )}

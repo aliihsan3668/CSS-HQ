@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
-import { uploadFile, deleteFile, isBlobConfigured } from "@/lib/storage";
+import { uploadFile, deleteFile } from "@/lib/storage";
 
 export async function POST(
   req: Request,
@@ -16,16 +16,6 @@ export async function POST(
     const subject = await db.subject.findUnique({ where: { id } });
     if (!subject) {
       return NextResponse.json({ error: "Subject not found" }, { status: 404 });
-    }
-
-    if (!isBlobConfigured() && process.env.VERCEL) {
-      return NextResponse.json(
-        {
-          error:
-            "Vercel Blob storage is not configured. Go to your Vercel project → Storage → Create Blob Store → connect it → redeploy.",
-        },
-        { status: 500 }
-      );
     }
 
     const formData = await req.formData();
@@ -44,7 +34,6 @@ export async function POST(
     try {
       uploaded = await uploadFile(file.name, buf, "application/pdf");
     } catch (e: any) {
-      console.error("[pdf-upload] Storage error:", e);
       return NextResponse.json(
         { error: e?.message || "File storage failed" },
         { status: 500 }
@@ -55,15 +44,24 @@ export async function POST(
       data: {
         subjectId: id,
         title,
-        storageKey: uploaded.storageKey,
+        storageKey: uploaded.source === "db" ? "db:pending" : uploaded.storageKey,
         source: uploaded.source,
         fileSize: uploaded.size,
         mimeType: "application/pdf",
+        dataBytes: uploaded.source === "db" ? uploaded.data : null,
       },
     });
+
+    if (uploaded.source === "db") {
+      await db.subjectPdf.update({
+        where: { id: pdf.id },
+        data: { storageKey: `db:${pdf.id}` },
+      });
+    }
+
     return NextResponse.json({ pdf });
   } catch (e: any) {
-    console.error("[pdf-upload] Unexpected error:", e);
+    console.error("[pdf-upload] Error:", e);
     return NextResponse.json(
       { error: e?.message || "Unexpected server error" },
       { status: 500 }
@@ -86,11 +84,12 @@ export async function DELETE(req: Request) {
     if (!pdf) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    await deleteFile(pdf.storageKey).catch(() => {});
+    if (pdf.source !== "db") {
+      await deleteFile(pdf.storageKey).catch(() => {});
+    }
     await db.subjectPdf.delete({ where: { id: pdfId } });
     return NextResponse.json({ success: true });
   } catch (e: any) {
-    console.error("[pdf-delete] Error:", e);
     return NextResponse.json(
       { error: e?.message || "Delete failed" },
       { status: 500 }
