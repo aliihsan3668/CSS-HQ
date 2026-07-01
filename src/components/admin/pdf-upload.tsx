@@ -64,44 +64,41 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
     }
   }
 
-  async function upload() {
+   async function upload() {
     if (!file) {
       toast.error("Select a PDF first");
       return;
     }
     setUploading(true);
     setProgress(0);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90_000);
+
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("title", title.trim() || file.name);
 
-      // Use XHR for progress events
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `/api/admin/subjects/${subjectId}/pdfs`);
-      xhr.upload.onprogress = (ev) => {
-        if (ev.lengthComputable) {
-          setProgress(Math.round((ev.loaded / ev.total) * 100));
-        }
-      };
-      const result = await new Promise<{ ok: boolean; data: unknown }>(
-        (resolve, reject) => {
-          xhr.onload = () => {
-            try {
-              const data = JSON.parse(xhr.responseText);
-              resolve({ ok: xhr.status >= 200 && xhr.status < 300, data });
-            } catch {
-              reject(new Error("Invalid response from server"));
-            }
-          };
-          xhr.onerror = () =>
-            reject(new Error("Network error during upload"));
-        }
-      );
-      if (!result.ok) {
-        const err = (result.data as { error?: string })?.error;
-        throw new Error(err || "Upload failed");
+      const res = await fetch(`/api/admin/subjects/${subjectId}/pdfs`, {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+
+      let data: any;
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        data = { error: text.slice(0, 500) || `Server returned ${res.status}` };
       }
+
+      if (!res.ok) {
+        throw new Error(data?.error || `Upload failed (HTTP ${res.status})`);
+      }
+
       toast.success("PDF uploaded", {
         description: `${title || file.name} is now available to buyers.`,
       });
@@ -110,11 +107,19 @@ export function PdfUpload({ subjectId, pdfs }: PdfUploadProps) {
       setProgress(0);
       if (fileRef.current) fileRef.current.value = "";
       router.refresh();
-    } catch (e) {
+    } catch (e: any) {
+      const msg =
+        e?.name === "AbortError"
+          ? "Upload timed out (90s). Vercel Blob might not be configured. Check the setup guide."
+          : e instanceof Error
+          ? e.message
+          : "Unknown error";
       toast.error("Upload failed", {
-        description: e instanceof Error ? e.message : "Unknown error",
+        description: msg,
+        duration: 10_000,
       });
     } finally {
+      clearTimeout(timeout);
       setUploading(false);
     }
   }
